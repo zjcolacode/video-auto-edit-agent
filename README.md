@@ -208,15 +208,102 @@ workspace/output/
 - **JSON Schema 严格命中**：17 个 segment 全部字段合法，未触发兜底。
 - **局限**：由于未接 ASR，模型只能按抽帧均匀划分片段（每段 ≈ 19s）。v0.2 接入 paraformer-v2 后，切分粒度可精准到语义跳变点。
 
-## 九、后续迭代（Roadmap）
+## 九、AI 解说重剪 (`narrate`, v0.3)
+
+“片段拼接”在纯口播场景会出现**叙事断裂**（开场以后直接跳到高潮，中间桥梁没了）。`narrate` 子命令走另一条路：脱离原视频时间线，让 LLM 写一篇 30–90 秒的解说稿、CosyVoice-v2 逐句配音、抽帧加 Ken Burns 动效重拼画面。
+
+### 1. 流水线
+
+```
+video.mp4
+  -> VideoIngestor   抽 32 帧，走 VideoAnalysis（复用 v0.1）
+  -> VisionAnalyst   产出 overall_summary + segments
+  -> ScriptWriter    qwen3.6-plus 多模态写稿，输出 NarrationScript
+  -> VoiceCaster     CosyVoice-v2 逐句合成 mp3 + ffprobe 取时长
+  -> SceneBuilder    每句 frame_indices -> Ken Burns mp4，concat + mux 音轨
+  -> narration.mp4 + narration.json
+```
+
+### 2. 前置：“普通百炼 Key”
+
+CosyVoice-v2 走原生 `dashscope` SDK，**Coding Plan Key 不能调用 TTS**。需要在阿里云百炼控制台 → API-KEY 管理，另开一把“普通 Key”，填到 `.env`：
+
+```bash
+TTS_API_KEY=sk-xxxxxxxx           # 必填
+TTS_MODEL=cosyvoice-v2            # 默认
+TTS_VOICE=longwan_v2              # longwan_v2(温柔女) | longxiaochun_v2(标准女) | longshu_v2(沉稳男)
+```
+
+> 计费说明：CosyVoice-v2 按字符计费，60s 解说约 240 字，单次成本约 0.01 元。如果已经为 ASR 开过 Key，可以复用同一把（代码会自动 fallback 到 `ASR_API_KEY`）。
+
+### 3. 调用命令
+
+```bash
+python main.py narrate input.mp4 \
+    --target 60 \
+    --tone casual \
+    --voice longwan_v2 \
+    --output workspace/output/narration.mp4
+```
+
+可选参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--target` | 60 | 目标解说时长（秒）。模型按“4 字/秒”推算字数，实际该 ±10% |
+| `--tone` | casual | `casual`(轻快口语) / `formal`(客观陈述) / `hype`(炸裂话术) |
+| `--voice` | 读取 .env | CosyVoice 音色名 |
+| `--num-frames` | **32** | narrate 默认 32（素材库更丰富），run 仍默认 16 |
+| `--model` | plus | `plus` / `pro` / `kimi`，同时用于画面理解与脚本撰写 |
+
+### 4. 产出示例
+
+```
+workspace/output/
+  narration.mp4              # AI 解说短视频（1280x720@30fps + aac）
+  narration.analysis.json    # 复用 VisionAnalyst 的原始分析
+  narration.narration.json   # 脚本 + 逐句时长 + 画面绑定帧
+```
+
+### 5. 与 `run` 的差异
+
+| | `run` (片段拼接版) | `narrate` (AI 解说版) |
+|---|---|---|
+| 画面 | 原视频高分片段 | 关键帧 + Ken Burns |
+| 音轨 | 原视频原声 | CosyVoice-v2 AI 配音 |
+| 时长控制 | 受限于足分片段 | 脚本驱动，可多句拼接到任意时长 |
+| 依赖 | 仅 Coding Plan Key | Coding Plan Key + 普通百炼 Key |
+| 适用 | “保留原生表达”、讲话/金句场景 | “需要完整叙事”、短视频/走量场景 |
+
+### 6. 脚本严格约束（见 `prompts/write_script.md`）
+
+- 叙事弧线四段齐备：钩子 5s + 是什么 10s + 亮点 30-50s + 行动呼吁 5s
+- 每句 12-25 字（CosyVoice 在此区间最自然），pydantic 强制 ≤ 50 字
+- 每句必须指定 1-2 帧，ScriptWriter 会裁错越界下标 + 去重
+- 同一帧不要复用超过 2 次（避免画面单调）
+
+### 7. 设计取舍
+
+- **为什么抽 32 帧而不是 16？** 脚本可能需要 8–16 句话，每句 × 1–2 帧，抽帧不够会出现重复画面。
+- **为什么不烧字幕？** v0.4 再加；当前依靠 TTS 口播表达。
+- **为什么要完全覆盖原音不保留 BGM？** 原音轨与 AI 解说会互打；BGM 衬底放 v0.4。
+- **为什么 ScriptWriter 用 0.7 而 VisionAnalyst 用 0.3？** 一个要创作多样性、一个要结构化稳定。
+
+### 8. 限制与调优点
+
+- TTS 请求是同步逐句的，10 句约 8–15s；如果需要几十句可考虑改并发
+- Ken Burns 在 1280x720 + 60s + 10 张图大约 30s 渲染
+- 模型返回的 `frame_indices` 偶尔会集中在开头几帧；可在 prompt 中加强“覆盖全时间线”约束
+
+## 十、后续迭代（Roadmap）
 
 - v0.2 接入 paraformer-v2 ASR Provider（含 OSS 上传 + 异步转写）
 - 自动字幕烧录（ffmpeg subtitles）
 - 节奏卡点与转场
-- LLM 解说稿 + TTS 配音重剪版
+- ~~LLM 解说稿 + TTS 配音重剪版~~ → **已于 v0.3 实现，见上节 narrate**
 - 长视频 map-reduce 摘要（>30min）
 - Web UI
 
-## 十、许可证
+## 十一、许可证
 
 MIT

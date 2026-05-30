@@ -97,6 +97,44 @@ class LLMClient:
         payload = self._parse_json(text)
         return VideoAnalysis.model_validate(payload)
 
+    # ---------- generic multimodal JSON completion ----------
+    def complete_json(
+        self,
+        prompt: str,
+        frames_b64: List[str],
+        *,
+        model: str,
+        temperature: float = 0.7,
+        extra_text: Optional[str] = None,
+    ) -> dict:
+        """Generic multimodal call returning a parsed JSON object.
+
+        Used by ScriptWriter and other agents that need free-form structured output
+        beyond the VideoAnalysis schema.
+        """
+        if not frames_b64:
+            raise ValueError("frames_b64 must contain at least one image")
+
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        if extra_text:
+            content.append({"type": "text", "text": extra_text})
+        for b64 in frames_b64:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                }
+            )
+
+        response = self._client.chat.completions.create(
+            model=resolve_model(model),
+            messages=[{"role": "user", "content": content}],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+        text = response.choices[0].message.content or ""
+        return self._parse_json(text)
+
     # ---------- helpers ----------
     @staticmethod
     def _parse_json(text: str) -> dict:
