@@ -125,6 +125,10 @@ video-auto-edit-agent/
 
 拿一段 **5’23” 的 Quivr 本地知识库教程**（1280×720，21 MB）跑了一次全流程。
 
+![精华片段封面：Quivr 工作原理图解](docs/images/showcase_quivr_pipeline.jpg)
+
+> 这一帧取自 Curator 挑中的精华片段（原视频 171–209s）。模型从这类架构图 + 字幕中提炼出“Quivr 如何检索与回答”这一核心价值点。
+
 ### 1. 调用命令
 ```bash
 python main.py run input.mp4 \
